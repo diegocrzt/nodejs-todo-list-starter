@@ -19,6 +19,7 @@ tareasRouter.use(bodyParser.json());
  */
 function allRequest(req, res, next) {
   res.statusCode = 200;
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Content-Type", "application/json");
   next();
 }
@@ -32,6 +33,7 @@ function allRequest(req, res, next) {
 function showOptions(req, res, next) {
   res.setHeader("Access-Control-Allow-Headers", "Accept,Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "OPTIONS,GET,POST");
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Allow", "OPTIONS,GET,POST");
   res.end();
 }
@@ -39,6 +41,7 @@ function showOptions(req, res, next) {
 function showOptionsPerResource(req, res, next) {
   res.setHeader("Access-Control-Allow-Headers", "Accept,Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "OPTIONS,GET,DELETE,PUT");
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Allow", "OPTIONS,GET,DELETE,PUT");
   res.end();
 }
@@ -130,10 +133,10 @@ async function obtenerTareas(req, res, next) {
 }
 
 /**
- * Crea una tarea en la base de datos y retorna el objeto creado con un 
+ * Crea una tarea en la base de datos y retorna el objeto creado con un
  * id válido.
- * 
- * @param {object} req Petición HTTP 
+ *
+ * @param {object} req Petición HTTP
  * @param {object} res Respuesta HTTP
  */
 async function crearTarea(req, res) {
@@ -150,9 +153,27 @@ async function crearTarea(req, res) {
 
   const jsonBody = req.body;
 
+  // Validamos que si existe el atributo description, sea una cadena no vacía
+  if (
+    jsonBody.description &&
+    !(
+      jsonBody.description instanceof String ||
+      typeof jsonBody.description === "string"
+    )
+  ) {
+    res.statusCode = 400;
+    res.send({
+      message: `Invalid attribute "description"`,
+      details: `The value ${description} for attribute "description" is invalid, it should be a non-empty string`
+    });
+    res.end();
+    return;
+  }
+
   const modeloACrear = {
     description: jsonBody.description,
-    status: "PENDIENTE"
+    status: "PENDIENTE",
+    date: new Date(Date.now()) // Agregamos la fecha de creación del modelo
   };
 
   const tareaCreada = await tareasLogic.create(modeloACrear);
@@ -162,18 +183,17 @@ async function crearTarea(req, res) {
 
 /**
  * Obtiene una tarea dado su identificador idTarea
- * 
+ *
  * @param {object} req Petición HTTP.
  * @param {object} res Respuesta HTTP.
  */
 async function obtenerTarea(req, res) {
-  const {idTarea}  = req.params;
-  try{
+  const { idTarea } = req.params;
+  try {
     const tarea = await tareasLogic.getOne(idTarea);
     res.send(tarea);
     res.end();
-  }
-  catch(error){
+  } catch (error) {
     res.statusCode = 400;
     res.send({
       message: `Can't find objecti with id : ${idTarea}`,
@@ -181,7 +201,177 @@ async function obtenerTarea(req, res) {
     });
     res.end();
   }
-  
+}
+
+async function actualizarTarea(req, res) {
+  const contenTypeHeader = req.header("Content-Type");
+  const acceptHeader = req.header("Accept");
+
+  // Validar el Content-Type sea application/json
+  if (!validContentTypeHeader(contenTypeHeader)) {
+    res.statusCode = 400;
+    res.send({
+      message: `Invalid Content-Type : ${contenTypeHeader}`,
+      details: "This endpoint expected JSON object with attribute `description`"
+    });
+    res.end();
+    return;
+  }
+
+  // Validar el Accept sea application/json
+  if (!validAcceptHeader(acceptHeader)) {
+    res.statusCode = 400;
+    res.send({
+      details:
+        "This endpoint only support 'application/json' media type, please verify your `Accept` header ",
+      message: `Media not supported :  ${acceptHeader}`
+    });
+    res.end();
+    return;
+  }
+
+  // Extraemos los atributos description y status del cupero del request (si existen)
+  const { description, status } = req.body;
+
+  // Validamos que si existe el atributo description sea una cadena no vacía
+  if (
+    description &&
+    !(description instanceof String || typeof description === "string")
+  ) {
+    res.statusCode = 400;
+    res.send({
+      message: `Invalid attribute "description"`,
+      details: `The value ${description} for attribute "description" is invalid, it should be a non-empty string`
+    });
+    res.end();
+    return;
+  }
+
+  // Con el path param recibido
+  const { idTarea } = req.params;
+
+  // Validar que exista la tarea con dicho id
+  let t;
+  try {
+    t = await tareasLogic.getOne(idTarea);
+    delete t.id; // getOne retorna un campo adiconal id, que no queremos actualizar
+  } catch (error) {
+    res.statusCode = 400;
+    res.send({
+      message: `Can't find object with id : ${idTarea}`,
+      details: "This endpoint expected a valid object identifier"
+    });
+    res.end();
+    return;
+  }
+
+  // A partir del status recibido en el request.
+  if (status) {
+    // Y el status del objeto ya existente.
+    const oldStatus = t.status;
+    // Verificamos
+    if (!["PENDIENTE", "TERMINADO", "CANCELADO"].includes(status)) {
+      res.statusCode = 400;
+      res.send({
+        message: `Invalid Data`,
+        details:
+          "Invalid status, only accepted `PENDIENTE`, `TERMINADO`, `CANCELADO`. It is case sensitive!"
+      });
+      res.end();
+      return;
+    }
+
+    // Lógica interna de actualizar tareas
+    // Comparamos en el caso que no sean del mismo estado
+    if (status !== oldStatus) {
+      if (oldStatus === "PENDIENTE") {
+        // Solo se puede pasar de PENDIENTE a TERMINADO o CANCELADO, no a otro status
+        if (status !== "TERMINADO" && status !== "CANCELADO") {
+          res.statusCode = 400;
+          res.send({
+            message: `Invalid Data`,
+            details: `A Task with status '${oldStatus}' can only be transitioned to status 'TERMINADO' or status 'CANCELADO'`
+          });
+          res.end();
+          return;
+        }
+      }
+
+      // Si una tarea se pasó a TERMINADO no puede pasar directamente a CANCELADO y viceversa.
+      if (
+        (oldStatus === "TERMINADO" && status === "CANCELADO") ||
+        (oldStatus === "CANCELADO" && status === "TERMINADO")
+      ) {
+        res.statusCode = 400;
+        res.send({
+          message: `Invalid Data`,
+          details: `A Task with status '${oldStatus}' can't be transitioned to status '${status}' directly`
+        });
+        res.end();
+        return;
+      }
+    }
+    t.status = status;
+  }
+
+  if (description) {
+    t.description = description;
+  }
+
+  t.date = new Date(Date.now());
+  try {
+    await tareasLogic.update(idTarea, t);
+    // La tarea fue actualiazada, pero el método update de mongoose no retorna el objeto
+    // por tanto haremos un segundo query para retornar la tarea actualizada
+    const tareaActualizada = await tareasLogic.getOne(idTarea)
+    res.send(tareaActualizada);
+    res.end();
+  } catch (error) {
+    console.error(`Can't update Error: ${error.name} : ${error.message}`);
+    res.statusCode = 400;
+    res.send({
+      message: `Can't update`,
+      details: `A Task with id '${idTarea}' can't be udpated`
+    });
+    res.end();
+    return;
+  }
+}
+
+async function borrarTarea(req, res) {
+  // Con el path param recibido
+  const { idTarea } = req.params;
+
+  // Validar que exista la tarea con dicho id
+  let t;
+  try {
+    t = await tareasLogic.getOne(idTarea);
+  } catch (error) {
+    res.statusCode = 400;
+    res.send({
+      message: `Can't find object with id : ${idTarea}`,
+      details: "This endpoint expected a valid object identifier"
+    });
+    res.end();
+    return;
+  }
+
+  try {
+    await tareasLogic.erase(idTarea);
+    res.statusCode = 200;
+    res.send({
+      message: `Task deleted`,
+      details: `The task with id ${idTarea} was successfully deleted`
+    });
+  } catch (error) {
+    res.statusCode = 400;
+    res.send({
+      message: `Can't be deleted`,
+      details: `Task with id ${idTarea} can't be deleted`
+    });
+    res.end();
+    return;
+  }
 }
 
 tareasRouter
@@ -208,18 +398,7 @@ tareasRouter
     res.statusCode = 405;
     res.end("POST operation is not suported on /tareas/" + req.params.idTarea);
   })
-  .put((req, res, next) => {
-    res.write("Actualizando la tarea: " + req.params.idTarea + "\n");
-    res.end(
-      "Actualizando la tarea: " +
-        req.body.descripcion +
-        " with details: " +
-        req.body.estado
-    );
-  })
-  .delete((req, res, next) => {
-    res.end("Borrando la tarea : " + req.params.idTarea);
-  });
+  .put(actualizarTarea)
+  .delete(borrarTarea);
 
 module.exports = tareasRouter;
-
