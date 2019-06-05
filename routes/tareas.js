@@ -72,7 +72,7 @@ function validAcceptHeader(acceptHeader) {
   }
 
   const acceptedTypes = acceptHeader.split(";").map(h => h.trim());
-  if (acceptedTypes.includes("application/json")) {
+  if (acceptedTypes.includes("application/json") || acceptedTypes.includes("*/*")) {
     return true;
   } else {
     return false;
